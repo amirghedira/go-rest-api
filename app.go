@@ -1,107 +1,87 @@
 package main
 
 import (
-	"encoding/json"
+	"crypto/rand"
+	"encoding/base64"
+	"fmt"
 	"log"
-	"math/rand"
 	"net/http"
-	"strconv"
 
-	_ "github.com/amirghedira/go-rest-api/types"
+	"github.com/amirghedira/go-rest-api/routes"
+	"github.com/golang-jwt/jwt"
 	"github.com/gorilla/mux"
+	"golang.org/x/crypto/bcrypt"
 )
 
-var books []Book
+var passwordCrypted = "$2a$11$lR1UEiV4t.J3KrKyLN24j.707QNMy25KS7EXbanAHy5Di2K2bp7EW"
 
-func getBooks(w http.ResponseWriter, r *http.Request) {
+func testRequestHandler(w http.ResponseWriter, r *http.Request) {
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(books)
-
-}
-
-func getBook(w http.ResponseWriter, r *http.Request) {
-
-	w.Header().Set("Content-Type", "application/json")
 	params := mux.Vars(r)
+	println(params["password"])
+	bytes, err := bcrypt.GenerateFromPassword([]byte(params["password"]), 11)
+	fmt.Println(string(bytes))
+	if err != nil {
 
-	for _, item := range books {
-		if item.Id == params["id"] {
-			json.NewEncoder(w).Encode(item)
-			return
-		}
+		fmt.Println(string(bytes))
 	}
-	w.WriteHeader(404)
-	message := make(map[string]string)
-	message["error"] = "Book not found"
-	json.NewEncoder(w).Encode(message)
-
 }
+func CheckPasswordHash(w http.ResponseWriter, r *http.Request) {
 
-func createBook(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	var book Book
-	json.NewDecoder(r.Body).Decode(&book)
-	book.Id = strconv.Itoa(rand.Intn(10000000000))
-	books = append(books, book)
-	json.NewEncoder(w).Encode(book)
-
-}
-func updateBook(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	var book Book
 	params := mux.Vars(r)
-
-	json.NewDecoder(r.Body).Decode(&book)
-	for i, item := range books {
-		if item.Id == params["id"] {
-			book.Id = books[i].Id
-			books[i] = book
-			json.NewEncoder(w).Encode(books[i])
-			return
-
-		}
-	}
-	w.WriteHeader(404)
-	message := make(map[string]string)
-	message["error"] = "Book not found"
-	json.NewEncoder(w).Encode(message)
+	println(params["password"])
+	err := bcrypt.CompareHashAndPassword([]byte(passwordCrypted), []byte(params["password"]))
+	fmt.Println(err == nil)
 }
 
-func deleteBook(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	params := mux.Vars(r)
+func loggingMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Do stuff here
+		log.Println(r.RequestURI)
+		// Call the next handler, which can be another middleware in the chain, or the final handler.
+		next.ServeHTTP(w, r)
+	})
+}
 
-	for i, item := range books {
-		println(i)
-		if item.Id == params["id"] {
-
-			books = append(books[:i], books[i+1:]...)
-			responseMessage := make(map[string]string)
-			responseMessage["message"] = "successfully delete book with id " + params["id"]
-			json.NewEncoder(w).Encode(responseMessage)
-			return
-
-		}
+func GenerateRandomBytes(n int) ([]byte, error) {
+	b := make([]byte, n)
+	_, err := rand.Read(b)
+	// Note that err == nil only if we read len(b) bytes.
+	if err != nil {
+		return nil, err
 	}
-	w.WriteHeader(404)
-	message := make(map[string]string)
-	message["error"] = "Book not found"
-	json.NewEncoder(w).Encode(message)
 
+	return b, nil
+}
+
+// GenerateRandomString returns a URL-safe, base64 encoded
+// securely generated random string.
+func GenerateRandomString(s int) (string, error) {
+	b, err := GenerateRandomBytes(s)
+	return base64.URLEncoding.EncodeToString(b), err
+}
+
+func GenerateToken(w http.ResponseWriter, r *http.Request) {
+
+	var hmacSampleSecret []byte
+	secretString, _ := GenerateRandomString(1000)
+	hmacSampleSecret = []byte(secretString)
+	// println(secretString)
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{"foo": "bar"})
+
+	// Sign and get the complete encoded token as a string using the secret
+	token.SignedString(hmacSampleSecret)
+
+	// fmt.Println(tokenString)
 }
 
 func main() {
 
-	books = append(books, Book{Id: "1", Title: "book1", Author: &Author{Firstname: "amir", Lastname: "ghedira"}})
-	books = append(books, Book{Id: "2", Title: "book2", Author: &Author{Firstname: "ahmed", Lastname: "kerkni"}})
-	books = append(books, Book{Id: "3", Title: "book3", Author: &Author{Firstname: "steeve", Lastname: "smith"}})
-	r := mux.NewRouter()
-	r.HandleFunc("/book", getBooks).Methods("GET")
-	r.HandleFunc("/book/{id}", getBook).Methods("GET")
-	r.HandleFunc("/book/{id}", updateBook).Methods("PATCH")
-	r.HandleFunc("/book/{id}", deleteBook).Methods("DELETE")
-	r.HandleFunc("/book", createBook).Methods("POST")
+	app := mux.NewRouter()
+	app.HandleFunc("/hash/{password}", testRequestHandler).Methods("GET")
+	app.HandleFunc("/check/{password}", CheckPasswordHash).Methods("GET")
+	app.Handle("/token", loggingMiddleware(http.HandlerFunc(GenerateToken))).Methods("GET")
 
-	log.Fatal(http.ListenAndServe(":5000", r))
+	routes.BookApi(app.PathPrefix("/book").Subrouter())
+	log.Fatal(http.ListenAndServe(":5000", app))
 }
